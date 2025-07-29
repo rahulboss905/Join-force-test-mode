@@ -2,7 +2,6 @@ import os
 import logging
 import time
 from threading import Thread
-from datetime import datetime
 from flask import Flask
 from pymongo import MongoClient
 from telegram import Update, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup
@@ -41,9 +40,6 @@ def health_check():
 def run_flask():
     app.run(host='0.0.0.0', port=8000)
 
-# Global variables for bot stats
-BOT_START_TIME = time.time()
-
 async def delete_previous_warnings(chat_id: int, user_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Delete all previous warning messages for a user"""
     if 'user_warnings' not in context.chat_data:
@@ -69,72 +65,20 @@ async def delete_previous_warnings(chat_id: int, user_id: int, context: ContextT
         del context.chat_data['user_warnings'][user_id]
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Create inline keyboard with add buttons and support channel
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                "➕ Add to Group", 
-                url=f"https://t.me/{context.bot.username}?startgroup=true"
-            ),
-            InlineKeyboardButton(
-                "➕ Add to Channel", 
-                url=f"https://t.me/{context.bot.username}?startchannel=true"
-            )
-        ]
-    ]
-    
-    # Add support channel button if configured
-    if os.getenv('SUPPORT_CHANNEL'):
-        keyboard.append([
-            InlineKeyboardButton(
-                "📢 Support Channel", 
-                url=f"https://t.me/{os.getenv('SUPPORT_CHANNEL')}"
-            )
-        ])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    welcome_text = (
-        "👋 *Welcome to Force Subscription Bot!*\n\n"
-        "I help group admins enforce channel subscriptions by muting users who haven't joined required channels.\n\n"
-        "✨ *Features:*\n"
-        "• Auto-mute non-subscribed users\n"
-        "• 5-minute mute duration\n"
-        "• Self-unmute after joining\n"
-        "• Supports both public & private channels\n\n"
-        "📌 *How to setup:*\n"
-        "1. Add me to your group as admin\n"
-        "2. Use `/fsub @channel` to set requirements\n"
-        "3. I'll handle the rest!\n\n"
-        "Click the buttons below to add me to your groups/channels:"
-    )
-
     if update.effective_chat.type == 'private':
         await update.message.reply_text(
-            welcome_text,
-            parse_mode='Markdown',
-            reply_markup=reply_markup
+            "Hi! I'm a forced subscription bot. Add me to a group and use /fsub to set a channel.\n\n"
+            "⚠️ Requirements:\n"
+            "- Make me admin in both group and channel\n"
+            "- Grant me 'Restrict users' permission"
         )
     else:
         await update.message.reply_text(
             "I'm a forced subscription bot. Use /fsub to set a required channel for this group.\n\n"
-            "ℹ️ I need to be admin in both this group and the channel to work properly.",
-            reply_markup=reply_markup
+            "ℹ️ I need to be admin in both this group and the channel to work properly."
         )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Create keyboard with support channel if configured
-    keyboard = []
-    if os.getenv('SUPPORT_CHANNEL'):
-        keyboard.append([
-            InlineKeyboardButton(
-                "📢 Support Channel", 
-                url=f"https://t.me/{os.getenv('SUPPORT_CHANNEL')}"
-            )
-        ])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-    
     await update.message.reply_text(
         "⚠️ Admin Requirements:\n"
         "- Make me admin in both group and channel\n"
@@ -143,8 +87,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start - Introduction\n"
         "/help - This message\n"
         "/fsub [@channel|ID|reply] - Set required channel\n\n"
-        "I'll mute anyone who hasn't joined the required channel for 5 minutes.",
-        reply_markup=reply_markup
+        "I'll mute anyone who hasn't joined the required channel for 5 minutes."
     )
 
 async def set_fsub_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -499,117 +442,6 @@ async def unmute_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             show_alert=True
         )
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Check if user is owner
-    if str(update.effective_user.id) != os.getenv('OWNER_ID'):
-        await update.message.reply_text("❌ You are not authorized to use this command.")
-        return
-
-    # Calculate uptime
-    uptime_seconds = time.time() - BOT_START_TIME
-    uptime = str(datetime.timedelta(seconds=int(uptime_seconds)))
-    
-    # Get groups count
-    groups_count = fsub_collection.count_documents({})
-    
-    # Get bot info
-    bot_info = await context.bot.get_me()
-    
-    # Get MongoDB status
-    mongo_status = "Connected" if mongo_client.server_info() else "Disconnected"
-    
-    # Prepare status message
-    status_text = (
-        f"🤖 *Bot Status Report*\n\n"
-        f"• Bot Name: [{bot_info.full_name}](t.me/{bot_info.username})\n"
-        f"• Uptime: `{uptime}`\n"
-        f"• Groups Using: `{groups_count}`\n"
-        f"• MongoDB: `{mongo_status}`\n\n"
-        f"📊 *System Stats*\n"
-        f"• Python Version: `{os.sys.version.split()[0]}`\n"
-        f"• Platform: `{os.sys.platform}`"
-    )
-    
-    await update.message.reply_text(
-        status_text,
-        parse_mode='Markdown',
-        disable_web_page_preview=True
-    )
-
-async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Check if user is owner
-    if str(update.effective_user.id) != os.getenv('OWNER_ID'):
-        await update.message.reply_text("❌ You are not authorized to use this command.")
-        return
-
-    # Check if message is replied to
-    if not update.message.reply_to_message:
-        await update.message.reply_text("ℹ️ Please reply to a message to broadcast it.")
-        return
-
-    # Get all group IDs
-    group_ids = fsub_collection.distinct("chat_id")
-    total_groups = len(group_ids)
-    
-    if total_groups == 0:
-        await update.message.reply_text("ℹ️ No groups to broadcast to.")
-        return
-
-    successful = 0
-    failed = 0
-    failed_ids = []
-    
-    # Send broadcast with progress
-    progress_msg = await update.message.reply_text(
-        f"📢 Starting broadcast to {total_groups} groups...\n"
-        f"• Sent: 0\n"
-        f"• Failed: 0"
-    )
-    
-    for i, chat_id in enumerate(group_ids):
-        try:
-            await context.bot.copy_message(
-                chat_id=chat_id,
-                from_chat_id=update.message.reply_to_message.chat_id,
-                message_id=update.message.reply_to_message.message_id
-            )
-            successful += 1
-        except Exception as e:
-            logger.error(f"Broadcast failed to {chat_id}: {e}")
-            failed += 1
-            failed_ids.append(chat_id)
-        
-        # Update progress every 10 messages or at the end
-        if (i+1) % 10 == 0 or (i+1) == total_groups:
-            try:
-                await progress_msg.edit_text(
-                    f"📢 Broadcasting to {total_groups} groups...\n"
-                    f"• Sent: {successful}\n"
-                    f"• Failed: {failed}\n"
-                    f"• Progress: {i+1}/{total_groups} ({((i+1)/total_groups)*100:.1f}%)"
-                )
-            except Exception as e:
-                logger.error(f"Error updating progress message: {e}")
-    
-    # Prepare final report
-    report_text = (
-        f"✅ Broadcast completed!\n\n"
-        f"• Total groups: {total_groups}\n"
-        f"• Successful: {successful}\n"
-        f"• Failed: {failed}"
-    )
-    
-    # Add failed IDs if any
-    if failed > 0:
-        report_text += f"\n\n❌ Failed IDs:\n{', '.join(map(str, failed_ids[:20]))}"
-        if failed > 20:
-            report_text += f"\n... and {failed-20} more"
-    
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=report_text
-    )
-
 def main():
     # Start Flask server in a separate thread
     Thread(target=run_flask, daemon=True).start()
@@ -621,8 +453,6 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("fsub", set_fsub_channel))
-    application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CommandHandler("broadcast", broadcast_command))
     application.add_handler(
         MessageHandler(filters.ChatType.GROUPS & ~filters.StatusUpdate.ALL, check_membership)
     )
